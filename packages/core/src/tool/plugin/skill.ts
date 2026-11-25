@@ -6,6 +6,8 @@ import { Effect, Schema } from "effect"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Skill } from "../../skill.js"
 import { Permission } from "../../permission.js"
+import { Mcp } from "../../mcp/index.js"
+import { McpSkillPlugin } from "../../plugin/mcp-skill.js"
 
 export const name = "skill"
 
@@ -34,6 +36,20 @@ export const Plugin = {
     const fs = yield* FSUtil.Service
     const skills = yield* Skill.Service
     const permission = yield* Permission.Service
+    const mcp = yield* Mcp.Service
+
+    // A skill an MCP server names by address is confirmed and registered, then loaded by its ID like any other, so it
+    // goes through the same permission check.
+    const confirm = Effect.fn("SkillTool.confirm")(function* (target: { server: string; uri: string }) {
+      const confirmed = yield* mcp.getSkill(target)
+      const id = McpSkillPlugin.ids(yield* mcp.skills()).find(
+        (item) => item.skill.server === confirmed.server && item.skill.entry.uri === confirmed.entry.uri,
+      )?.id
+      if (!id) return yield* unableToLoad(`${target.server}:${target.uri}`)
+      return yield* new ToolFailure({
+        message: `That address names the skill ${id}. Load it with the skill tool and the ID "${id}".`,
+      })
+    })
     yield* ctx.tool
       .transform((editor) =>
         editor.add({
@@ -45,7 +61,13 @@ export const Plugin = {
           execute: (input, context) =>
             Effect.gen(function* () {
               const skill = yield* skills.get(input.id)
-              if (!skill) return yield* unableToLoad(input.id)
+              if (!skill) {
+                const target = McpSkillPlugin.address(input.id)
+                if (!target) return yield* unableToLoad(input.id)
+                return yield* confirm(target).pipe(
+                  Effect.mapError((error) => (error instanceof ToolFailure ? error : unableToLoad(input.id, error))),
+                )
+              }
               return yield* Effect.gen(function* () {
                 yield* permission.assert({
                   action: name,

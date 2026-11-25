@@ -95,7 +95,7 @@ export const Plugin = define({
  * `acme/support/refunds` become `docs:billing.refunds` and `docs:support.refunds`. Paths that never differ, such as
  * one skill under two URI schemes, also get a hash of the URI.
  */
-function ids(listed: ReadonlyArray<Mcp.Skill>) {
+export function ids(listed: ReadonlyArray<Mcp.Skill>) {
   return Array.from(
     Map.groupBy(
       listed.filter((skill) => skill.entry.resources !== "dynamic"),
@@ -117,4 +117,13 @@ function ids(listed: ReadonlyArray<Mcp.Skill>) {
       group.map((skill, index) => `${segments[index]?.join(".")}.${Hash.sha256(skill.entry.uri).slice(0, 8)}`)
     return group.map((skill, index) => ({ skill, id: Skill.ID.make(`${skill.server}:${labels[index]}`) }))
   })
+}
+
+/** A skill addressed as `<server>:<SKILL.md uri>`, as in `docs:skill://acme/billing/refunds/SKILL.md`. */
+export function address(value: string) {
+  const colon = value.indexOf(":")
+  if (colon <= 0) return undefined
+  const uri = value.slice(colon + 1)
+  if (!uri.endsWith("/SKILL.md") || !/^[A-Za-z][A-Za-z0-9+.-]*:./.test(uri)) return undefined
+  return { server: value.slice(0, colon), uri }
 }

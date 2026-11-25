@@ -221,6 +221,14 @@ export interface Interface extends State.Transformable<Editor> {
     readonly entry: McpClient.Skill
     readonly ref?: string
   }) => Effect.Effect<McpClient.SkillFile, NotFoundError | Error>
+  /**
+   * Experimental: confirms a skill the server didn't list, given its `SKILL.md` URI (`skills/get`), and lists it with
+   * the server's other skills while the server stays connected. No file is read.
+   */
+  readonly getSkill: (input: {
+    readonly server: ServerName | string
+    readonly uri: string
+  }) => Effect.Effect<Skill, NotFoundError | Error>
   /** Experimental: MCP Events of a connected server that offers them. */
   readonly events: (server: ServerName | string) => Effect.Effect<McpClient.Events | undefined, NotFoundError>
   /**
@@ -561,6 +569,9 @@ export const layer = (options?: Options) =>
         if (!entry) return yield* new NotFoundError({ server: name })
         return entry
       })
+      // Skills each server confirmed through `skills/get` without listing them.
+      const adopted = new Map<ServerName, McpClient.Skill[]>()
+
       const connected = Effect.fnUntraced(function* (name: ServerName) {
         const entry = yield* requireServer(name)
         yield* entry.startup.await
@@ -1179,9 +1190,28 @@ export const layer = (options?: Options) =>
           })
         }),
         skills: Effect.fn("MCP.skills")(function* () {
-          return Array.from(entries).flatMap(([server, entry]) =>
-            (entry.connection.skills ?? []).map((skill): Skill => ({ server, entry: skill })),
+          return Array.from(entries).flatMap(([server, entry]) => {
+            const listed = entry.connection.skills
+            if (!listed) return []
+            // Skills confirmed by URI stay until the server lists them itself.
+            const extra = (adopted.get(server) ?? []).filter((skill) => !listed.some((item) => item.uri === skill.uri))
+            return [...listed, ...extra].map((skill): Skill => ({ server, entry: skill }))
+          })
+        }),
+        getSkill: Effect.fn("MCP.getSkill")(function* (input) {
+          const name = ServerName.make(input.server)
+          const target = yield* connected(name)
+          if (!target.client) return yield* Effect.fail(new Error(unavailable(name, target.entry.status)))
+          const entry = yield* target.entry.connection.recovering(target.client, (connection) =>
+            connection.skills
+              ? connection.skills.get(input.uri)
+              : Effect.fail(new Error(`MCP server "${name}" does not offer skills`)),
           )
+          if (!target.entry.connection.skills?.some((skill) => skill.uri === entry.uri)) {
+            adopted.set(name, [...(adopted.get(name) ?? []).filter((skill) => skill.uri !== entry.uri), entry])
+            yield* bus.publish(SkillsChanged, { server: name })
+          }
+          return { server: name, entry }
         }),
         readSkill: Effect.fn("MCP.readSkill")(function* (input) {
           const name = ServerName.make(input.server)

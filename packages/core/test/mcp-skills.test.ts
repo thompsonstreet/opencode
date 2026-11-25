@@ -77,7 +77,7 @@ const id = Skill.ID.make("team:deploy")
  */
 const skillServer = (
   skills: Record<string, Record<string, string>>,
-  options: { instructions?: string; extra?: ServedSkill[] } = {},
+  options: { instructions?: string; extra?: ServedSkill[]; unlisted?: Record<string, Record<string, string>> } = {},
 ) =>
   Effect.acquireRelease(
     Effect.promise(async () => {
@@ -85,8 +85,11 @@ const skillServer = (
         ...(await Promise.all(Object.entries(skills).map(([folder, files]) => skillEntry(folder, files)))),
         ...(options.extra ?? []),
       ]
+      const hidden = await Promise.all(
+        Object.entries(options.unlisted ?? {}).map(([folder, files]) => skillEntry(folder, files)),
+      )
       const served = new Map<string, string>(
-        Object.entries(skills).flatMap(([folder, files]) =>
+        Object.entries({ ...skills, ...options.unlisted }).flatMap(([folder, files]) =>
           Object.entries(files).map(([file, content]) => [`skill://${folder}/${file}`, content] as const),
         ),
       )
@@ -95,7 +98,7 @@ const skillServer = (
       new SkillsExtension({
         source: {
           list: async () => ({ skills: entries }),
-          get: async (uri) => entries.find((entry) => entry.uri === uri),
+          get: async (uri) => [...entries, ...hidden].find((entry) => entry.uri === uri),
           read: async (uri) => {
             const text = served.get(uri)
             return text === undefined ? undefined : { text }
@@ -188,6 +191,22 @@ describe("MCP skills", () => {
         ["team:billing.refunds", "Billing refunds"],
         ["team:support.refunds", "Support refunds"],
       ])
+    }),
+  )
+
+  it.live("registers a skill the server confirms by URI without listing it", () =>
+    Effect.gen(function* () {
+      const disputes = { "SKILL.md": "---\nname: disputes\ndescription: Handle disputes\n---\n# Disputes\n" }
+      const server = yield* skillServer({ deploy }, { unlisted: { "billing/disputes": disputes } })
+      yield* connect("team", server.url, ["team:deploy"])
+      const mcp = yield* Mcp.Service
+      const confirmed = yield* mcp.getSkill({ server: "team", uri: "skill://billing/disputes/SKILL.md" })
+      expect(confirmed.entry.frontmatter.name).toBe("disputes")
+      const skills = yield* Skill.Service
+      const disputesID = Skill.ID.make("team:disputes")
+      yield* eventually(skills.list(), (listed) => listed.some((skill) => skill.id === disputesID))
+      expect(server.state.reads).toEqual([])
+      expect(yield* skills.content(disputesID)).toBe("# Disputes\n")
     }),
   )
 

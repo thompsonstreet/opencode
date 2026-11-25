@@ -19,13 +19,15 @@ import { imagePassthrough } from "./lib/image"
 import { permissionLayer } from "./lib/permission"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
+import { Mcp } from "@opencode/core/mcp/index"
+import { emptyMcpLayer } from "./fixture/mcp"
 import { toolIdentity, executeTool, registerToolPlugin, toolDefinitions, toolNodeReplacements } from "./lib/tool"
 import { registerIntegrationPolicy, setOrganizationPolicy } from "./fixture/policy"
 
 const skillToolNode = makeLocationNode({
   name: "test/skill-tool-plugin",
   layer: Layer.effectDiscard(registerToolPlugin(SkillTool.Plugin)),
-  deps: [Tool.node, FSUtil.node, Skill.node, Permission.node],
+  deps: [Tool.node, FSUtil.node, Skill.node, Permission.node, Mcp.node],
 })
 
 const sessionID = Session.ID.make("ses_skill_tool_test")
@@ -61,6 +63,7 @@ describe("SkillTool", () => {
           Config.node.replace(Config.testLayer()),
           Permission.node.replace(permissionLayer({ assert: () => Effect.die("Blocked skill reached authorization") })),
           Image.node.replace(imagePassthrough),
+          Mcp.node.replace(emptyMcpLayer),
         ]),
       ),
     ),
@@ -113,6 +116,7 @@ describe("SkillTool", () => {
           const skillToolLayer = AppNodeBuilder.build(LayerNode.group([Tool.node, skillToolNode]), [
             ...toolNodeReplacements(permission),
             Skill.node.replace(skills),
+            Mcp.node.replace(emptyMcpLayer),
           ])
 
           return yield* Effect.gen(function* () {
