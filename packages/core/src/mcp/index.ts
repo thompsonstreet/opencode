@@ -70,6 +70,8 @@ export type PromptResult = McpClient.GetPromptResult
 export interface Skill {
   readonly server: ServerName
   readonly entry: McpClient.Skill
+  /** Confirmed through `skills/get` rather than listed. */
+  readonly confirmed?: boolean
 }
 
 export const Resource = Mcp.Resource
@@ -120,6 +122,8 @@ type ServerEntry = {
   // Set when a remote server is registered as an OAuth integration; the credential lives in the global store.
   integrationID?: Integration.ID
   registration?: State.Registration
+  // Skills the server confirmed through `skills/get` without listing them, until it connects again.
+  confirmed: McpClient.Skill[]
 }
 
 // A client-hosted MCP server attached over a connection the client opened. Internal: never listed,
@@ -569,9 +573,6 @@ export const layer = (options?: Options) =>
         if (!entry) return yield* new NotFoundError({ server: name })
         return entry
       })
-      // Skills each server confirmed through `skills/get` without listing them.
-      const adopted = new Map<ServerName, McpClient.Skill[]>()
-
       const connected = Effect.fnUntraced(function* (name: ServerName) {
         const entry = yield* requireServer(name)
         yield* entry.startup.await
@@ -704,6 +705,7 @@ export const layer = (options?: Options) =>
           status: { status: "pending" },
           startup: Latch.makeUnsafe(),
           attempt: { started, settled: Latch.makeUnsafe() },
+          confirmed: [],
           connection: (pooled ? share : McpConnection.make)({
             name,
             config,
@@ -728,6 +730,7 @@ export const layer = (options?: Options) =>
                 // Announce the handshake so connect() and credential reconnects don't show a stale
                 // disabled/failed status for the duration of the connection attempt.
                 entry.status = { status: "pending" }
+                entry.confirmed = []
                 yield* bus.publish(McpEvent.StatusChanged, { server: name })
               }),
               connected: Effect.gen(function* () {
@@ -1193,9 +1196,13 @@ export const layer = (options?: Options) =>
           return Array.from(entries).flatMap(([server, entry]) => {
             const listed = entry.connection.skills
             if (!listed) return []
-            // Skills confirmed by URI stay until the server lists them itself.
-            const extra = (adopted.get(server) ?? []).filter((skill) => !listed.some((item) => item.uri === skill.uri))
-            return [...listed, ...extra].map((skill): Skill => ({ server, entry: skill }))
+            return [
+              ...listed.map((skill): Skill => ({ server, entry: skill })),
+              // Until the server lists them itself.
+              ...entry.confirmed
+                .filter((skill) => !listed.some((item) => item.uri === skill.uri))
+                .map((skill): Skill => ({ server, entry: skill, confirmed: true })),
+            ]
           })
         }),
         getSkill: Effect.fn("MCP.getSkill")(function* (input) {
@@ -1207,11 +1214,12 @@ export const layer = (options?: Options) =>
               ? connection.skills.get(input.uri)
               : Effect.fail(new Error(`MCP server "${name}" does not offer skills`)),
           )
-          if (!target.entry.connection.skills?.some((skill) => skill.uri === entry.uri)) {
-            adopted.set(name, [...(adopted.get(name) ?? []).filter((skill) => skill.uri !== entry.uri), entry])
+          const listed = target.entry.connection.skills?.some((skill) => skill.uri === entry.uri)
+          if (!listed) {
+            target.entry.confirmed = [...target.entry.confirmed.filter((skill) => skill.uri !== entry.uri), entry]
             yield* bus.publish(SkillsChanged, { server: name })
           }
-          return { server: name, entry }
+          return { server: name, entry, ...(listed ? {} : { confirmed: true }) }
         }),
         readSkill: Effect.fn("MCP.readSkill")(function* (input) {
           const name = ServerName.make(input.server)

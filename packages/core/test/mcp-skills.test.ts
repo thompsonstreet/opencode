@@ -207,6 +207,24 @@ describe("MCP skills", () => {
       yield* eventually(skills.list(), (listed) => listed.some((skill) => skill.id === disputesID))
       expect(server.state.reads).toEqual([])
       expect(yield* skills.content(disputesID)).toBe("# Disputes\n")
+
+      // A confirmed skill whose name is taken is named by its path, and the listed skill keeps its ID.
+      const other = { "SKILL.md": "---\nname: deploy\ndescription: Other deploy\n---\n# Other\n" }
+      const second = yield* skillServer({ deploy }, { unlisted: { "billing/deploy": other } })
+      yield* connect("ops", second.url, ["ops:deploy"])
+      yield* mcp.getSkill({ server: "ops", uri: "skill://billing/deploy/SKILL.md" })
+      const renamed = yield* eventually(skills.list(), (listed) =>
+        listed.some((skill) => skill.id === Skill.ID.make("ops:billing.deploy")),
+      )
+      expect(renamed.some((skill) => skill.id === Skill.ID.make("ops:deploy"))).toBe(true)
+
+      // Pointing the server name at another server drops what the old one confirmed.
+      const replacement = yield* skillServer({ deploy })
+      yield* mcp.add("team", new ConfigMCP.Remote({ type: "remote", url: replacement.url, oauth: false }))
+      yield* eventually(
+        skills.list(),
+        (listed) => listed.some((skill) => skill.id === id) && !listed.some((skill) => skill.id === disputesID),
+      )
     }),
   )
 
